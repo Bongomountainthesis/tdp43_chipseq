@@ -1,0 +1,34 @@
+File description
+
+samples' names had been changed as follows:
+GFP-TDP43 w4 2steps fix ChIP -> GFP-TDP43_w4_2steps_fix_ChIP
+GFP-TDP43 w4 standard ChIP -> GFP-TDP43_w4_standard_ChIP
+GFP-TDP43 w4 standard ChIP input -> GFP-TDP43_w4_standard_ChIP_input
+HA-FUS w6 2steps fix ChIP -> HA-FUS_w6_2steps_fix_ChIP
+HA-FUS w6 2steps fix ChIP input -> HA-FUS_w6_2steps_fix_ChIP_input
+HA-FUS w6 standard ChIP -> HA-FUS_w6_standard_ChIP
+
+
+==== raw_reads ====
+Files included in this directory:
+a) sample.clean.fq.gz - Modified FASTQ format file 
+b) md5.txt - md5 value
+
+==== Format Description ====
+
+sample.clean.fq
+
+@FC301DUAAXX:4:1:2:1719#0/1
+GTAACGTACCNANTNCGTGCCGGAGATCTTNNCCT
++FC301DUAAXX:4:1:2:1719#0/1
+aaabaa`aa\D^DXD^a_aaabaZaX^\_BBBBBB
+           
+1.       Reads name created by solexa
+2.       Reads sequence
+3.       Reads name created by solexa
+4.       Reads quality score, each letter is corresponding to base quality value, which is counted by ASCII minus 64 and calculated as following: $sQ = -10 * log($e / (1 - $e)) / log(10)
+
+
+
+
+
