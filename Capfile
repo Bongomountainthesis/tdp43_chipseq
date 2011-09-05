@@ -24,7 +24,7 @@ set :availability_zone, 'eu-west-1a'
 #ami-20794c54 64bit Lucid
 
 set :nhosts, 1
-set :group_name, 'ns5dastro_h3k4me3_chipseq_matt'
+set :group_name, 'tdp43_chipseq'
 
 set :snap_id, `cat SNAPID`.chomp #ec2 eu-west-1 
 set :vol_id, `cat VOLUMEID`.chomp #empty until you've created a new volume
@@ -33,25 +33,19 @@ set :ebs_zone, 'eu-west-1a'  #is where the ubuntu ami is
 set :dev, '/dev/sdh'
 set :mount_point, '/mnt/data'
 
+###ssh to server
+#ssh -i /home/kkvi1130/ec2/mattskey.pem ubuntu@ec2-79-125-68-105.eu-west-1.compute.amazonaws.com
+
+###sft to server
+#sftp -o"IdentityFile=/home/kkvi1130/ec2/mattskey.pem" ubuntu@ec2-79-125-68-105.eu-west-1.compute.amazonaws.com
 
 #Data uploading.
-set :input_data, 'data/CMN028_028_unique_hits.txt'
-set :ip_data, 'data/CMN027_181_unique_hits.txt'
 
-desc "Upload each dataset one to the new EBS volume"
-task :upload_data, :roles => proc{fetch :group_name} do
-  upload("#{input_data}", "#{mount_point}/input.export.txt")
-  upload("#{ip_data}", "#{mount_point}/ip.export.txt")
+desc "Upload data files"
+task :upload_data, :roles => group_name do
+    run "rsync -e 'ssh -i /home/kkvi1130/ec2/mattskey.pem' -vzP data/GFP-TDP43* ubuntu@ec2-46-137-42-36.eu-west-1.compute.amazonaws.com:#{mount_point}" 
 end
 before 'upload_data', 'EC2:start'
-
-
-set :ip, "#{mount_point}/ip.export.txt"
-set :input, "#{mount_point}/input.export.txt"
-
-
-
-
 
 #make a new EBS volume from this snap 
 #cap EBS:create
