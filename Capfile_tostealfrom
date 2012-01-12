@@ -246,7 +246,7 @@ task :get_bam, :roles => group_name do
     download( "#{mount_point}/#{f}", "results/alignment/bowtie/#{f}")
   }
 end
-before "get_bam", "EC2:start"
+before "get_bam", "sort_bam","rmdups","index","flagstat","EC2:start"
 
 
 # Need to do this or macs will run out of space to make WIG files on a 30GB partition.

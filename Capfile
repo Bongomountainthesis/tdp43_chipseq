@@ -31,6 +31,8 @@ set :vol_id, `cat VOLUMEID`.chomp #empty until you've created a new volume
 set :ebs_size, 100  #Needs to be the size of the snap plus enough space for alignments
 set :ebs_zone, 'eu-west-1a'  #is where the ubuntu ami is
 set :dev, '/dev/sdh'
+#######comment out the sdh line after creating the EC2 and EBS and before mounting###########
+#set :dev, '/dev/xvdh'
 set :mount_point, '/mnt/data'
 
 ###ssh to server
@@ -39,13 +41,6 @@ set :mount_point, '/mnt/data'
 ###sft to server
 #sftp -o"IdentityFile=/home/kkvi1130/ec2/mattskey.pem" ubuntu@ec2-79-125-68-105.eu-west-1.compute.amazonaws.com
 
-#Data uploading.
-
-desc "Upload data files"
-task :upload_data, :roles => group_name do
-    run "rsync -e 'ssh -i /home/kkvi1130/ec2/mattskey.pem' -vzP data/GFP-TDP43* ubuntu@ec2-46-137-42-36.eu-west-1.compute.amazonaws.com:#{mount_point}" 
-end
-before 'upload_data', 'EC2:start'
 
 #make a new EBS volume from this snap 
 #cap EBS:create
@@ -54,187 +49,166 @@ before 'upload_data', 'EC2:start'
 #cap EBS:attach
 #cap EBS:mount_xfs
 
+#### Data uploading.
 
-
-# There's little point in realigning this data - anything ELAND couldn't align
-# has been thrown away already. So...
-
-desc "remove the .fa extension from chr names in unique_hits files"
-task :strip_fa, :roles => group_name do
-  run "perl -pi -e 's/(chr.+)\.fa/$1/g' #{ip}\n"
-  run "perl -pi -e 's/(chr.+)\.fa/$1/g' #{input}\n"
-
+desc "Upload data files"
+task :upload_data, :roles => group_name do
+    run "rsync -e 'ssh -i /home/kkvi1130/ec2/mattskey.pem' -vzP data/GFP-TDP43* ubuntu@ec2-46-137-42-36.eu-west-1.compute.amazonaws.com:#{mount_point}" 
 end
-before "strip_fa", "EC2:start"
+before 'upload_data', 'EC2:start'
 
-
-#desc "install R on all running instances in group group_name"
-#task :install_r, :roles  => group_name do
-#  sudo "mkdir -p #{working_dir}/scripts"
-#  user = variables[:ssh_options][:user]
-#  sudo "chown #{user} #{working_dir}/scripts"
-#  sudo 'apt-get -y install r-base'
-#  sudo 'apt-get -y install build-essential libxml2 libxml2-dev libcurl3 libcurl4-openssl-dev'
-#  run "curl http://github.com/cassj/ns5dastro_h34kme3_chipseq/raw/master/scripts/R_setup.R > #{working_dir}/scripts/R_setup.R"
-#  sudo "Rscript #{working_dir}/scripts/R_setup.R"
-#end
-#before "install_r", "EC2:start"
-  
-
-
-desc "install liftOver"
-task :install_liftover, :roles => group_name do
-
-  #64bit UCSC liftOver
-  run "curl http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/liftOver > #{working_dir}/liftOver"
-  run "sudo mv #{working_dir}/liftOver /usr/bin/liftOver"
-  run 'sudo chmod +x /usr/bin/liftOver'
-
-end 
-before "install_liftover", "EC2:start"
-
-
-desc "get mm8tomm9 chainfile"
-task :mm8_chain_mm9, :roles => group_name do
-  run "mkdir -p #{working_dir}/lib"
-  run "curl http://hgdownload.cse.ucsc.edu/goldenPath/mm8/liftOver/mm8ToMm9.over.chain.gz > #{working_dir}/lib/mm8ToMm9.over.chain.gz"
-  run "gunzip -c #{working_dir}/lib/mm8ToMm9.over.chain.gz > #{working_dir}/lib/mm8ToMm9.over.chain"
-end 
-before "mm8_chain_mm9", "EC2:start"
-
-
-
-desc "liftOver ELAND mm8 positions to mm9"
-task :liftOver, :roles => group_name do
-  sudo "mkdir -p #{working_dir}/scripts"
-  sudo "chown ubuntu:ubuntu #{working_dir}/scripts"
-  run "curl  -L http://github.com/cassj/ns5dastro_h34kme3_chipseq/raw/master/scripts/sortedmm8tomm9.R > #{working_dir}/scripts/sortedmm8tomm9.R"
-  run "chmod +x #{working_dir}/scripts/sortedmm8tomm9.R"
- 
-  files = capture "ls #{mount_point}"
-  files = files.split("\n").select{|f| f.match(/export\.txt/)}
-  files.each{|f|     
-    run "cd #{mount_point} && Rscript #{working_dir}/scripts/sortedmm8tomm9.R #{f} #{working_dir}/lib/mm8ToMm9.over.chain" 
+desc "unzip data"
+task :unzip_data, :roles => group_name do
+    files = capture("ls #{mount_point}/*.gz")
+  files = files.split("\n")
+  files.each {|f| 
+      run "cd #{mount_point}/ && gunzip #{f}"
   }
 end
-before "liftOver", "EC2:start"
+before 'unzip_data', 'EC2:start' 
 
+#### Quality Control
 
-desc "Remove anything mapping to a random chr"
-task :remove_random, :roles => group_name do
-  files = capture "ls #{mount_point}"
-  files = files.split("\n").select{|f| f.match(/export_mm9\.txt/)}
-  files.each{|f|     
-    run "cd #{mount_point} && perl -ni.bak -e 'print $_ unless /.*random.*/;' #{f}" 
+# convert the export.txt file to fastq for alignment
+task :make_fastq, :roles => group_name do 
+  upload("/space/cassj/chipseq_pipeline/export2fastq.pl", "#{working_dir}/export2fastq.pl")
+  run "chmod +x #{working_dir}/export2fastq.pl"
+  run "sudo mv #{working_dir}/export2fastq.pl /usr/local/bin/"
+
+  files = capture("ls #{mount_point}/*export.txt").split("\n")
+  files = files.map {|f| f.chomp}
+
+  files.each{|infile| 
+    outfile = infile.sub('.txt', '.fastq')
+    run "export2fastq.pl #{infile} > #{outfile}"
+  } 
+
+end
+before 'make_fastq', 'EC2:start' 
+
+# Run fastQC on the data files
+desc "run fastqc"
+task :fastqc, :roles => group_name do
+  files = capture("ls #{mount_point}/*.fq").split("\n")
+  files = files.map {|f| f.chomp}
+   
+  files.each{|infile| 
+    run "fastqc --outdir #{mount_point} #{infile}"
+  } 
+
+end
+before 'fastqc', 'EC2:start'
+
+# Pull the results back to the mng.iop.kcl.ac.uk server
+desc "download fastqc files"
+task :get_fastqc, :roles => group_name do
+  `rm -Rf results/fastqc` #remove previous results
+  `mkdir -p results/fastqc`
+  files = capture "ls #{mount_point}/*fastqc.zip"
+  files = files.split("\n")
+  files.each{|f|
+    outfile = f.sub(/.*\//,'')
+    download( "#{f}", "results/fastqc/#{outfile}")
+    `cd results/fastqc && unzip #{outfile} && rm #{outfile}`
   }
 end
-before "remove_random", "EC2:start"
+before "get_fastqc", 'EC2:start'
+
+#### Alignment
 
 
-
-
-## fetch samtools from svn
-#desc "get samtools"
-#task :get_samtools, :roles => group_name do
-#  sudo "apt-get -y install subversion"
-#  run "svn co https://samtools.svn.sourceforge.net/svnroot/samtools/trunk/samtools"
-#end
-#before "get_samtools", "EC2:start"
-#
-#
-#desc "build samtools"
-#task :build_samtools, :roles => group_name do
-#  sudo "apt-get -y install zlib1g-dev libncurses5-dev"
-#  run "cd /home/ubuntu/samtools && make"
-#end
-#before "build_samtools", "EC2:start"
-#
-#
-#desc "install samtools"
-#task :install_samtools, :roles => group_name do
-#  sudo "cp /home/ubuntu/samtools/samtools /usr/local/bin/samtools"
-#end
-#before "install_samtools", "EC2:start"
-#
-
-desc "make sam files from unique.txt"
-task :make_sam, :roles => group_name do
-  run "cd #{working_dir}/scripts && curl -L http://github.com/cassj/ns5dastro_h34kme3_chipseq/raw/master/scripts/sorted2sam.pl > sorted2sam.pl"
-  run "sudo mv #{working_dir}/scripts/sorted2sam.pl /usr/local/bin"
-  run "sudo chmod +x /usr/local/bin/sorted2sam.pl"
-  ip_i = ip.sub('.txt','_mm9.txt')
-  input_i = input.sub('.txt','_mm9.txt')
-  ip_o = ip_i.sub('.txt','.sam')
-  input_o = input_i.sub('.txt','.sam')
-  run "sorted2sam.pl #{ip_i} > #{ip_o}"
-  run "sorted2sam.pl #{input_i} > #{input_o}"
+#get the current human genome from bowtie prebuilt indexes
+task :fetch_genome, :roles => group_name do
+  run "mkdir -p #{working_dir}/indexes"
+  run "cd #{working_dir}/indexes && curl ftp://ftp.cbcb.umd.edu/pub/data/bowtie_indexes/hg19.ebwt.zip > hg19.ebwt.zip"
+  run "rm -Rf #{working_dir}/indexes/chr*"
+  run "cd  #{working_dir}/indexes && unzip -o hg19.ebwt.zip"
+#?  run "export BOWTIE_INDEXES='#{working_dir}/indexes'"
 end
-before 'make_sam', 'EC2:start'
+before "fetch_genome","EC2:start"
 
+# run bowtie on the fastq file
+# This is recent illumina data, quals should be post v1.3
+task :run_bowtie, :roles => group_name do
 
-desc "add sam headers"
-task :sam_head, :roles => group_name do
-  ip_i = ip.sub('.txt','_mm9.sam')
-  input_i = input.sub('.txt','_mm9.sam')
-  ip_o = ip_i.sub('_mm9', '_mm9_head')
-  input_o = input_i.sub('_mm9', '_mm9_head')
-  upload('scripts/mm9_sam_header', "#{working_dir}/mm9_sam_header")
-  run "cd #{mount_point} && cat #{working_dir}/mm9_sam_header #{ip_i} >  #{ip_o}"
-  run "cd #{mount_point} && cat #{working_dir}/mm9_sam_header #{input_i} >  #{input_o}"
-  run "cd #{mount_point} && mv #{ip_o} #{ip_i}"
-  run "cd #{mount_point} && mv #{input_o} #{input_i}"
+  files = capture("ls #{mount_point}/*.fq").split("\n")
+  files = files.map {|f| f.chomp}
+
+  files.each{|infile|
+    outfile = infile.sub('.fq', '.sam')
+    run("export BOWTIE_INDEXES='#{working_dir}/indexes' && bowtie  --sam --best -k1 -l15 -n1 -m3 -p20 --solexa1.3-quals --chunkmbs 256  -q hg19 --quiet  #{infile}  > #{outfile} ")
+  } 
+
 end
-before 'sam_head', 'EC2:start'
+before "run_bowtie", "EC2:start"
 
-
+# Make binary BAM files from SAM
 desc "make bam from sam"
 task :to_bam, :roles => group_name do
-  run "cd #{working_dir} && curl http://github.com/cassj/my_bioinfo_scripts/raw/master/genomes/mm9_lengths > mm9_lengths"
-  ip_i = ip.sub('.txt','_mm9.sam')
-  input_i = input.sub('.txt','_mm9.sam')
-  ip_o = ip_i.sub('.sam','.bam')
-  input_o = input_i.sub('.sam','.bam')
-  run "samtools view -bt #{working_dir}/mm9_lengths -o #{ip_o}  #{ip_i}"
-  run "samtools view -bt #{working_dir}/mm9_lengths -o #{input_o} #{input_i}"
+  run "curl 'http://github.com/cassj/my_bioinfo_scripts/raw/master/genomes/hg19_lengths' > #{working_dir}/hg19_lengths"
+  files = capture "ls #{mount_point}"
+  files = files.split("\n").select{|f| f.match(/\.sam$/)}
+  files.each{|f| 
+    f_out = f.sub('.sam', '.bam')
+    puts "samtools view -bt #{working_dir}/hg19_lengths -o #{mount_point}/#{f_out} #{mount_point}/#{f}"
+  }
 end
 before "to_bam", "EC2:start"
 
+# Sort the BAM files
 desc "sort bam"
 task :sort_bam, :roles => group_name do
-  ip_i = ip.sub('.txt','_mm9.bam')
-  input_i = input.sub('.txt','_mm9.bam')
-  ip_o = ip_i.sub('.bam','_sorted')
-  input_o = input_i.sub('.bam','_sorted')
-  run "samtools sort #{ip_i} #{ip_o}"
-  run "samtools sort #{input_i} #{input_o}"
+  files = capture "ls #{mount_point}"
+  files = files.split("\n").select{|f| f.match(/\.bam/)}
+  files.each{|f| 
+    f_out = f.sub('.bam', '_sorted')
+    puts "cd #{mount_point} && samtools sort #{f}  #{f_out}"
+  }
 end
 before "sort_bam", "EC2:start"
 
+
+# Remove PCR Duplicate Reads
 desc "remove duplicates"
 task :rmdups, :roles => group_name do
-  ip_i = ip.sub('.txt','_mm9_sorted.bam')
-  input_i = input.sub('.txt','_mm9_sorted.bam')
-  ip_o = ip_i.sub('sorted', 'sorted_nodups')
-  input_o = input_i.sub('sorted','sorted_nodups')
-
-  run "samtools rmdup -s #{ip_i} #{ip_o}"
-  run "samtools rmdup -s #{input_i} #{input_o}"
+  files = capture "ls #{mount_point}"
+  files = files.split("\n").select{|f| f.match(/sorted\.bam/)}
+  files.each{|f| 
+    f_out = f.sub('sorted', 'sorted_nodups')
+    run "cd #{mount_point} && samtools rmdup -s #{f}  #{f_out}"
+  }
 end
 before "rmdups", "EC2:start"
 
 
+
+# Index the BAM files
 desc "index bam files"
 task :index, :roles => group_name do
-  ip_i = ip.sub('.txt','_mm9_sorted_nodups.bam')
-  input_i = input.sub('.txt','_mm9_sorted_nodups.bam')
-  ip_o = ip_i.sub('.bam', '.bai')
-  input_o = input_i.sub('.bam','.bai')
-  run "samtools index #{ip_i} #{ip_o}"
-  run "samtools index #{input_i} #{input_o}"
+  files = capture "ls #{mount_point}"
+  files = files.split("\n").select{|f| f.match(/sorted_nodups\.bam/)}
+  files.each{|f| 
+    f_out = f.sub('.bam', '.bai')
+    run "cd #{mount_point} && samtools index  #{f} #{f_out}"
+  }
 end
 before "index", "EC2:start"
 
+# Create a summary of the files
+desc "create a summary of the bam files"
+task :flagstat, :roles => group_name do
+ files = capture "ls #{mount_point}"
+  files = files.split("\n").select{|f| f.match(/sorted_nodups\.bam/)}
+  files.each{|f|
+    f_out = f.sub('.bam', '.summary')
+    run "cd #{mount_point} && samtools flagstat #{f} > #{f_out}"
+  }
 
+end
+before "flagstat", "EC2:start"
+
+
+# Pull the BAM files back to the mng.iop.kcl.ac.uk server
 desc "download bam files"
 task :get_bam, :roles => group_name do
   `rm -Rf results/alignment/bowtie` #remove previous results
@@ -245,10 +219,7 @@ task :get_bam, :roles => group_name do
     download( "#{mount_point}/#{f}", "results/alignment/bowtie/#{f}")
   }
 end
-before "get_bam", 'EC2:start'
-
-
-
+before "get_bam","EBS:snapshot","EC2:start"
 
 
 
@@ -275,40 +246,54 @@ before "get_bam", 'EC2:start'
 #  run "sudo cp #{working_dir}/#{bin} /usr/local/bin/PeakSplitter"
 #end 
 #before 'install_peaksplitter', 'EC2:start'
-#
-#you'll need to have done "install_r" and install_peak_splitter to do this
+
+desc "run macs"
 task :run_macs, :roles => group_name do
-  treatment = "#{mount_point}/ip.export_mm9_sorted_nodups.bam"
-  control = "#{mount_point}/input.export_mm9_sorted_nodups.bam"
-  genome = 'mm'
+  HA-FUS_standard_IP = "#{mount_point}/HA-FUS_w6_standard_ChIP_clean_sorted_nodups.bam"
+  HA-FUS_2step_IP = "#{mount_point}/HA-FUS_w6_2steps_fix_ChIP_clean_sorted_nodups.bam"
+  GFP-TDP43_standard_IP = "#{mount_point}/GFP-TDP43_w4_standard_ChIP_input_clean_sorted_nodups.bam"
+  GFP-TFP43_2step_IP = "#{mount_point}/GFP-TDP43_w4_2steps_fix_ChIP_clean_sorted_nodups.bam"
+  Input_2steps = "#{mount_point}/HA-FUS_w6_2steps_fix_ChIP_input_clean_sorted_nodups.bam"
+  Input_standard = "#{mount_point}/GFP-TDP43_w4_standard_ChIP_input_clean_sorted_nodups.bam"
+
+  genome = 'hs'
   bws = [300]
   pvalues = [0.00001]
 
-  #unsure what p values and bandwidths are appropriate, try a few?
-  bws.each {|bw|
-    pvalues.each { |pvalue|
-
-      dir = "#{mount_point}/macs_#{bw}_#{pvalue}"
+      dir = "#{mount_point}/macs_#{bw}_#{pvalue}_HA_FUS_standard"
       run "rm -Rf #{dir}"
       run "mkdir #{dir}"
 
-      macs_cmd =  "macs --treatment #{treatment} --control #{control} --name #{group_name} --format BAM --gsize #{genome} --bw #{bw} --pvalue #{pvalue}"
+      macs_cmd =  "macs --treatment #{HA-FUS_standard_IP} --control #{Input_standard} --name #{group_name} --format BAM --gsize #{genome} --pvalue #{pvalue}"
       run "cd #{dir} && #{macs_cmd}"
-      
-      dir = "#{mount_point}/macs_#{bw}_#{pvalue}_subpeaks"
+
+      dir = "#{mount_point}/macs_#{bw}_#{pvalue}_HA_FUS_2step"
       run "rm -Rf #{dir}"
       run "mkdir #{dir}"
 
-      # With SubPeak finding
-      # this will take a lot longer as you have to save the wig file 
-      macs_cmd =  "macs --treatment #{treatment} --control #{control} --name #{group_name} --format BAM --gsize #{genome} --call-subpeaks  --bw #{bw} --pvalue #{pvalue} --wig"
+      macs_cmd =  "macs --treatment #{HA-FUS_2step_IP} --control #{Input_2steps} --name #{group_name} --format BAM --gsize #{genome} --pvalue #{pvalue}"
       run "cd #{dir} && #{macs_cmd}"
 
-    }
-  }
+      dir = "#{mount_point}/macs_#{bw}_#{pvalue}_GFP-TDP43_standard"
+      run "rm -Rf #{dir}"
+      run "mkdir #{dir}"
+
+      macs_cmd =  "macs --treatment #{GFP-TDP43_standard_IP} --control #{Input_standard} --name #{group_name} --format BAM --gsize #{genome} --pvalue #{pvalue}"
+      run "cd #{dir} && #{macs_cmd}"
+
+      dir = "#{mount_point}/macs_#{bw}_#{pvalue}_GFP-TDP43_2step"
+      run "rm -Rf #{dir}"
+      run "mkdir #{dir}"
+
+      macs_cmd =  "macs --treatment #{GFP-TFP43_2step_IP} --control #{Input_2steps} --name #{group_name} --format BAM --gsize #{genome} --pvalue #{pvalue}"
+      run "cd #{dir} && #{macs_cmd}"      
+     
+
+    
   
 end
 before 'run_macs', 'EC2:start'
+
 
 desc "bamToBed"
 task :bamToBed, :roles => group_name do
